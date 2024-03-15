@@ -1,0 +1,227 @@
+import numpy as np
+np.seterr(divide='ignore', invalid='ignore')
+from numpy import *
+import csv
+#import time
+import itertools
+from scipy.special import comb
+
+from ase import Atoms
+
+def tangent(x):
+    return (1-exp(-2*x)) / (1+exp(-2*x))
+
+
+def AtomE(G,W1,W2,W3,B1,B2,B3):
+    HL_1_In= (dot(G,W1)+B1);       
+    HL_1_Out = tangent(HL_1_In);
+    # G row is 70Gs  column is 24 atoms
+    # calculate the 1st hidden layer
+    HL_2_In= (dot(HL_1_Out,W2)+B2);  
+    HL_2_Out = tangent(HL_2_In);
+    # calculate the 2nd hidden layer
+    OL_In = (dot(HL_2_Out,W3)+B3);            
+    OL_Out = OL_In;
+    # calculate the output layer
+    
+    return HL_1_In,HL_1_Out,HL_2_In,HL_2_Out,OL_In,OL_Out
+
+def G2(Rc,Rs,eta_G2,cors_i, type_i, cors_j, types_j):
+    Cxyz=vstack([cors_i,cors_j]);
+    #print(Cxyz);
+    Num=1;
+    Num_tot=len(cors_j)+1;
+    numeta=size(eta_G2);
+    Dx = Cxyz[:,0]-Cxyz[:,0].reshape(Num_tot,1);
+    Dy = Cxyz[:,1]-Cxyz[:,1].reshape(Num_tot,1);
+    Dz = Cxyz[:,2]-Cxyz[:,2].reshape(Num_tot,1);
+    distance_all = sqrt(multiply(Dx,Dx)+multiply(Dy,Dy)+multiply(Dz,Dz));
+    distance_C_C = distance_all[0:Num,0:Num_tot];
+    G2value_C_C = mat(zeros((Num,numeta)));
+    #print(distance_C_C)
+     
+    for i in range(0,numeta,1):
+        fc_C=0.5*multiply(cos(pi*distance_C_C/Rc)+1,((0<distance_C_C)&(distance_C_C<=Rc)));
+        para_C=eta_G2[i]*multiply(distance_C_C-Rs,distance_C_C-Rs);
+        gfunction_C_C=multiply(exp(-para_C),fc_C);
+        G2value_C_C[:,i]=gfunction_C_C.sum(axis=1);
+
+        
+    return G2value_C_C
+
+
+def G4(Rc,eta_G4,zeta,lambd,cors_i, type_i, cors_j, types_j):
+    Cxyz=vstack([cors_i,cors_j]);
+    Num=1;
+    Num_tot=len(cors_j)+1;
+    C=array(Cxyz[0:Num_tot,:]);
+    x=C[:,0];
+    y=C[:,1];
+    z=C[:,2];
+    numpara=len(eta_G4);
+    Dx = C[:,0]-C[:,0].reshape(Num_tot,1);
+    Dy = C[:,1]-C[:,1].reshape(Num_tot,1);
+    Dz = C[:,2]-C[:,2].reshape(Num_tot,1);
+    distance_all = sqrt(multiply(Dx,Dx)+multiply(Dy,Dy)+multiply(Dz,Dz));
+    number=zeros((Num,Num_tot-1),dtype=int);
+    selectrow=int(comb(Num_tot-1,2))
+    select1=zeros((Num,selectrow),dtype=int);
+    select2=zeros((Num,selectrow),dtype=int);
+    center=array(range(0,Num,1)).reshape(Num,1);
+
+    for i in range(0,Num,1):
+        number[i,:]=delete(range(0,Num_tot,1),i);
+        select1[i,:]=array(list(itertools.combinations(number[i,:],2)))[:,0].reshape(1,selectrow);
+        select2[i,:]=array(list(itertools.combinations(number[i,:],2)))[:,1].reshape(1,selectrow);
+  
+    cosangle=(multiply(x[select1]-x[center],x[select2]-x[center])+multiply(y[select1]-y[center],y[select2]-y[center])+multiply(z[select1]-z[center],z[select2]-z[center])) / multiply(sqrt((x[select1]-x[center])**2+(y[select1]-y[center])**2+(z[select1]-z[center])**2),sqrt((x[select2]-x[center])**2+(y[select2]-y[center])**2+(z[select2]-z[center])**2));
+    Rij=array(distance_all[repeat(center,selectrow),select1.flatten()].reshape(Num,selectrow));
+    Rik=array(distance_all[repeat(center,selectrow),select2.flatten()].reshape(Num,selectrow));
+    Rjk=array(distance_all[select1.flatten(),select2.flatten()].reshape(Num,selectrow));
+    #print(time.time()-start)
+    
+    G4=((1+cosangle*lambd)**zeta)*exp((Rij**2+Rjk**2+Rik**2)*-eta_G4)*multiply(cos(pi*Rij/Rc)+1,(Rij<=Rc))*multiply(cos(pi*Rik/Rc)+1,(Rik<=Rc))*multiply(cos(pi*Rjk/Rc)+1,(Rjk<=Rc));
+    G4_C_C_C=0.125*2.0**(1-zeta).flatten()*G4.sum(axis=2).T;
+    #print(time.time()-start)
+    #print(isnan(G4_C_C_C))
+    
+    return G4_C_C_C
+
+
+def ann(cors_i, type_i, cors_j, types_j):
+    
+    with open ('/home/akashs5/Graphene_24/num/eta_G2.csv','r',encoding='utf-8',newline='') as csvfile:
+        eta_G2=csvfile.readlines()[0].strip().split(',')
+        eta_G2=array(list(map(eval,eta_G2)))
+
+    with open ('/home/akashs5/Graphene_24/num/eta_G4.csv','r',encoding='utf-8',newline='') as csvfile:
+        eta_G4=csvfile.readlines()[0].strip().split(',')
+        eta_G4=array(list(map(eval,eta_G4)))
+        
+    with open ('/home/akashs5/Graphene_24/num/zeta.csv','r',encoding='utf-8',newline='') as csvfile:
+        zeta=csvfile.readlines()[0].strip().split(',')
+        zeta=array(list(map(eval,zeta)))
+
+    num_G2=len(eta_G2);
+    num_G4=len(eta_G4);
+    
+    Rc = np.loadtxt('/home/akashs5/Graphene_24/num/parameter.csv',skiprows=1,delimiter=',',usecols=(1));
+    Rs = np.loadtxt('/home/akashs5/Graphene_24/num/parameter.csv',skiprows=1,delimiter=',',usecols=(2));   
+    
+    lambd=hstack([-ones((1,num_G4)),ones((1,num_G4))]).flatten();
+    eta_G4=tile(eta_G4,2);
+    zeta=tile(zeta,2);
+    eta_G4=np.expand_dims(eta_G4,axis=1)
+    eta_G4=np.expand_dims(eta_G4,axis=2)
+    zeta=np.expand_dims(zeta,axis=1)
+    zeta=np.expand_dims(zeta,axis=2)
+    lambd=np.expand_dims(lambd,axis=1)
+    lambd=np.expand_dims(lambd,axis=2)
+    
+    W1=np.loadtxt('/home/akashs5/Graphene_GAP/data/W1.csv', dtype=float,delimiter=',');
+    W2=np.loadtxt('/home/akashs5/Graphene_GAP/data/W2.csv', dtype=float,delimiter=',');
+    W3=np.loadtxt('/home/akashs5/Graphene_GAP/data/W3.csv', dtype=float,delimiter=',');
+    B1=np.loadtxt('/home/akashs5/Graphene_GAP/data/B1.csv', dtype=float,delimiter=',');
+    B2=np.loadtxt('/home/akashs5/Graphene_GAP/data/B2.csv', dtype=float,delimiter=',');
+    B3=np.loadtxt('/home/akashs5/Graphene_GAP/data/B3.csv', dtype=float,delimiter=',');
+    
+    ave=np.loadtxt('/home/akashs5/Graphene_GAP/data/ave.CSV', dtype=float,delimiter=',');
+    var=np.loadtxt('/home/akashs5/Graphene_GAP/data/var.CSV', dtype=float,delimiter=',');
+
+    G = hstack([G2(Rc,Rs,eta_G2,cors_i, type_i, cors_j, types_j),G4(Rc,eta_G4,zeta,lambd,cors_i, type_i, cors_j, types_j)])
+    G_scaled=(G-ave)/var
+    
+    #with open ('/home/xinc4/Graphene_24/data/G.csv','a',encoding='utf-8',newline='') as csvfile:
+    #    writer=csv.writer(csvfile,dialect='excel');
+    #    writer.writerow(G_scaled)
+    #time.sleep(1)
+
+    HL_1_IN,HL_1_OUT,HL_2_IN,HL_2_OUT,OL_IN,OL_OUT = AtomE(G_scaled,W1,W2,W3,B1,B2,B3);
+    E=[]
+    E.append(sum(OL_OUT));
+       
+#    with open ('/home/akashs5/Graphene_24/data/energy.csv','a',encoding='utf-8',newline='') as csvfile:
+#        writer=csv.writer(csvfile,dialect='excel');
+#        writer.writerow(E);
+        
+    return E[0]
+
+
+def ann_force(calculator, atoms, index_i, type_i, indices_j, types_j, offsets_j,q):
+    delta=0.00001
+    atom_types = atoms.get_chemical_symbols()
+    #neighbors = NeighborList(cutoffs, skin=0.0, self_interaction=False, bothways=True)
+    #self.neighbors.update(atoms)
+    
+    #calculate the energy of atom i
+    coords_i = atoms.positions[index_i].copy()
+    counting = 0
+    n_j = len(indices_j)
+    coords_j = np.empty((n_j,3), dtype=np.double)
+    for index_j, offset_j in zip(indices_j, offsets_j):
+        coo = (atoms.positions[index_j] + np.dot(offset_j, atoms.get_cell()))
+        #you don't  know the exact value of the first term so you have to use a for loop
+        coords_j[counting] = coo
+        counting+=1
+    E_i = ann(coords_i, type_i, coords_j, types_j)
+    
+    coords_i+=[delta,0,0]
+    E_ix = ann(coords_i, type_i, coords_j, types_j)
+    coords_i-=[delta,0,0]
+
+    coords_i+=[0,delta,0]
+    E_iy = ann(coords_i, type_i, coords_j, types_j)
+    coords_i-=[0,delta,0]
+    
+    coords_i+=[0,0,delta]
+    E_iz = ann(coords_i, type_i, coords_j, types_j)
+    coords_i-=[0,0,delta]
+    
+    diff = np.array(E_i - [E_ix, E_iy, E_iz])
+
+    #calculate the energy of atom j, needs to find all neighboring atoms jj.
+    for index_j, offset_j in zip(indices_j, offsets_j):
+        #print(offset_j)
+        #print(index_j)
+        coords_j = atoms.positions[index_j] + np.dot(offset_j, atoms.get_cell())
+        type_j = atom_types[index_j]
+        indices_jj, offsets_jj = calculator.neighbors.get_neighbors(index_j)
+        #print(indices_jj)
+        #print(offsets_jj)
+        counting = 0
+        types_jj = []
+        n_jj=len(indices_jj)
+        coords_jj = np.empty((n_jj,3), dtype=np.double)
+        for index_jj, offset_jj in zip(indices_jj, offsets_jj):
+            if (index_jj == index_i) and ((offset_jj == -offset_j).all()):
+                label_i=counting
+            #get the label of atom i in the neighborlist of atom j
+            types_jj.append(atom_types[index_jj])
+            coo = (atoms.positions[index_jj] + np.dot(offset_j + offset_jj, atoms.get_cell())) 
+            coords_jj[counting] = coo
+            counting+=1
+        E_j = ann(coords_j, type_j, coords_jj, types_jj)
+        
+        coords_jj[label_i]+=[delta,0,0]
+        E_jx = ann(coords_j, type_j, coords_jj, types_jj)
+        coords_jj[label_i]-=[delta,0,0]
+
+        coords_jj[label_i]+=[0,delta,0]
+        E_jy = ann(coords_j, type_j, coords_jj, types_jj)
+        coords_jj[label_i]-=[0,delta,0]
+    
+        coords_jj[label_i]+=[0,0,delta]
+        E_jz = ann(coords_j, type_j, coords_jj, types_jj)
+        coords_jj[label_i]-=[0,0,delta]
+    
+        diff += np.array(E_j - [E_jx, E_jy, E_jz])
+    
+    forces = diff / delta
+    result = hstack([np.array([index_i]), E_i, forces])
+    q.put(result)
+ 
+        
+    
+        
+if __name__ == "__main__" :
+    print('great')
